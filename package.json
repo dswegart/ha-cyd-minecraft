@@ -1,0 +1,12 @@
+{
+  "name": "ha-cyd-minecraft-card",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test tests/card.test.cjs"
+  },
+  "dependencies": {"qrcode-generator": "2.0.4"},
+  "devDependencies": {"esbuild": "0.28.2", "jsqr": "1.4.0"}
+}

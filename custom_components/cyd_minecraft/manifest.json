@@ -1,0 +1,13 @@
+{
+  "domain": "cyd_minecraft",
+  "name": "CYD Minecraft",
+  "codeowners": ["@dswegart"],
+  "config_flow": true,
+  "dependencies": ["websocket_api"],
+  "documentation": "https://github.com/dswegart/ha-cyd-minecraft",
+  "integration_type": "service",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/dswegart/ha-cyd-minecraft/issues",
+  "requirements": [],
+  "version": "1.0.0"
+}

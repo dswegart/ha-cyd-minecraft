@@ -1,0 +1,8 @@
+{
+  "title": "CYD Minecraft",
+  "config": {
+    "step": {"user": {"title": "Connect the LAN CYD hub", "description": "Enter the hub's private LAN IPv4 address. Your Minecraft credentials remain in CYD, never in the dashboard.", "data": {"host": "LAN IPv4 address", "port": "CYD port"}}},
+    "error": {"cannot_connect": "Cannot read servers from CYD. Check the hub and credential adapter.", "invalid_host": "Use a private LAN IPv4 address, not a URL or public address."},
+    "abort": {"single_instance_allowed": "Only one CYD Minecraft hub can be configured."}
+  }
+}
