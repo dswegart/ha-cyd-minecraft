@@ -56,7 +56,7 @@ class AuthorizationTest(unittest.IsolatedAsyncioTestCase):
 class HubTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.hub = Hub(Mock(), "192.168.1.2", 8098)
-        self.hub.write_selected = AsyncMock()
+        self.hub.write_server = AsyncMock()
         self.hub.wait_state = AsyncMock()
         self.hub.snapshot = AsyncMock(return_value={"servers": []})
 
@@ -64,58 +64,82 @@ class HubTest(unittest.IsolatedAsyncioTestCase):
         self.hub.servers = AsyncMock(return_value=[server("old", "running"), server("new")])
         with self.assertRaises(HubError):
             await self.hub.command("start", "new")
-        self.hub.write_selected.assert_not_called()
+        self.hub.write_server.assert_not_called()
 
     async def test_unknown_state_fails_closed(self):
         self.hub.servers = AsyncMock(return_value=[server("old", "unknown"), server("new")])
         with self.assertRaises(HubError):
             await self.hub.command("rotate", "new")
-        self.hub.write_selected.assert_not_called()
+        self.hub.write_server.assert_not_called()
 
     async def test_players_require_confirmation(self):
         for players in (2, None):
             self.hub.servers = AsyncMock(return_value=[server("old", "running", players), server("new")])
             with self.assertRaises(HubError):
                 await self.hub.command("rotate", "new")
-        self.hub.write_selected.assert_not_called()
+        self.hub.write_server.assert_not_called()
 
     async def test_rotation_order_and_confirmed_stop(self):
         self.hub.servers = AsyncMock(side_effect=[[server("old", "running", 2), server("new")], [server("old"), server("new")]])
         events = []
-        self.hub.write_selected.side_effect = lambda identifier, action, count: events.append((identifier, action))
+        self.hub.write_server.side_effect = lambda identifier, action, allow_players=False: events.append((identifier, action))
         self.hub.wait_state.side_effect = lambda identifier, state: events.append((identifier, state))
         await self.hub.command("rotate", "new", allow_players=True)
         self.assertEqual(events, [("old", "stop"), ("old", "stopped"), ("new", "start"), ("new", "running")])
+        self.assertEqual(self.hub.write_server.await_args_list[0].args, ("old", "stop", True))
 
     async def test_failed_stop_never_starts_new_world(self):
         self.hub.servers = AsyncMock(return_value=[server("old", "running"), server("new")])
         self.hub.wait_state.side_effect = HubError("timeout")
         with self.assertRaises(HubError):
             await self.hub.command("rotate", "new")
-        self.hub.write_selected.assert_awaited_once_with("old", "stop", 2)
+        self.hub.write_server.assert_awaited_once_with("old", "stop", False)
 
     async def test_port_recheck_before_start(self):
         self.hub.servers = AsyncMock(side_effect=[[server("old"), server("new")], [server("old", "running"), server("new")]])
         with self.assertRaises(HubError):
             await self.hub.command("start", "new")
-        self.hub.write_selected.assert_not_called()
+        self.hub.write_server.assert_not_called()
 
     async def test_stop_idempotent(self):
         self.hub.servers = AsyncMock(return_value=[server("new")])
         await self.hub.command("stop", "new")
-        self.hub.write_selected.assert_not_called()
+        self.hub.write_server.assert_not_called()
 
     async def test_arbitrary_request_is_rejected(self):
         with self.assertRaises(HubError):
             await self.hub.request("/api/secrets")
 
-    async def test_picker_race_blocks_write(self):
+    async def test_control_uses_exact_identifier_without_picker(self):
         hub = Hub(Mock(), "192.168.1.2", 8098)
-        hub.select = AsyncMock()
-        hub.request = AsyncMock(return_value={"server": {"id": "other"}})
-        with self.assertRaises(HubError):
-            await hub.write_selected("new", "start", 2)
-        hub.request.assert_awaited_once_with("/api/crafty/selected")
+        hub.request = AsyncMock(return_value={})
+        identifier = "11111111-2222-3333-4444-555555555555"
+        await hub.write_server(identifier, "stop", True)
+        hub.request.assert_awaited_once_with(f"/api/crafty/servers/{identifier}/stop", "POST", data={"allow_players": True})
+
+    async def test_control_rejects_path_injection(self):
+        hub = Hub(Mock(), "192.168.1.2", 8098)
+        hub.request = AsyncMock()
+        for identifier in ("../selected", "abc", "11111111-2222-3333-4444-555555555555/start"):
+            with self.assertRaises(HubError):
+                await hub.write_server(identifier, "start")
+        hub.request.assert_not_called()
+
+    async def test_request_allowlist_and_body_are_closed(self):
+        path = "/api/crafty/servers/11111111-2222-3333-4444-555555555555/stop"
+        for request_path, method, data in ((path, "GET", None), (path, "POST", None),
+                (path, "POST", {"allow_players": "yes"}), (path, "POST", {"allow_players": True, "url": "x"}),
+                ("/api/crafty/selected/stop", "POST", None), ("/api/crafty/servers", "GET", {})):
+            with self.assertRaises(HubError):
+                await self.hub.request(request_path, method, data=data)
+        self.hub.session.request.assert_not_called()
+
+    async def test_wait_checks_fresh_state_without_retrying_write(self):
+        hub = Hub(Mock(), "192.168.1.2", 8098)
+        hub.servers = AsyncMock(side_effect=[[server("new")], [server("new", "running")]])
+        with patch("custom_components.cyd_minecraft.hub.asyncio.sleep", new_callable=AsyncMock) as sleep:
+            await hub.wait_state("new", "running")
+        sleep.assert_awaited_once_with(5)
 
     async def test_payload_strips_unrelated_values_and_unknown_flags(self):
         hub = Hub(Mock(), "192.168.1.2", 8098)

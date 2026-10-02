@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import re
 from typing import Any
 
 import aiohttp
@@ -32,22 +33,26 @@ class Hub:
         self.base_url = origin(host, port)
         self.lock = asyncio.Lock()
 
-    async def request(self, path: str, method: str = "GET") -> dict[str, Any]:
+    async def request(self, path: str, method: str = "GET", *, data: dict | None = None) -> dict[str, Any]:
         allowed = {
             ("GET", "/api/crafty/servers"),
             ("GET", "/api/crafty/selected"),
-            ("POST", "/api/crafty/select/next"),
-            ("POST", "/api/crafty/selected/start"),
-            ("POST", "/api/crafty/selected/stop"),
         }
-        if (method, path) not in allowed:
+        control = method == "POST" and re.fullmatch(
+            r"/api/crafty/servers/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}/(start|stop)", path
+        )
+        if not control and (method, path) not in allowed:
             raise HubError("Unsupported CYD operation")
+        if (control and (not isinstance(data, dict) or set(data) != {"allow_players"}
+                         or not isinstance(data["allow_players"], bool))) or (not control and data is not None):
+            raise HubError("Unsupported CYD request data")
         try:
             async with self.session.request(
                 method, self.base_url + path,
                 timeout=aiohttp.ClientTimeout(total=10),
                 allow_redirects=False,
                 headers={"Accept": "application/json"},
+                **({"json": data} if control else {}),
             ) as response:
                 if response.status >= 300:
                     raise HubError(f"CYD rejected the request (HTTP {response.status})")
@@ -94,27 +99,19 @@ class Hub:
             raise HubError("Server state is unknown; refusing to change it.")
         return target
 
-    async def select(self, server_id: str, count: int) -> None:
-        """Use the legacy CYD picker, bounded by the known server count."""
-        for _ in range(count + 1):
-            selected = (await self.request("/api/crafty/selected")).get("server")
-            if isinstance(selected, dict) and selected.get("id") == server_id:
-                return
-            await self.request("/api/crafty/select/next", "POST")
-        raise HubError("CYD selection changed. Refresh and try again.")
-
-    async def write_selected(self, server_id: str, action: str, count: int) -> None:
-        await self.select(server_id, count)
-        selected = (await self.request("/api/crafty/selected")).get("server")
-        if not isinstance(selected, dict) or selected.get("id") != server_id:
-            raise HubError("CYD selection changed; no command was sent.")
-        await self.request(f"/api/crafty/selected/{action}", "POST")
+    async def write_server(self, server_id: str, action: str, allow_players: bool = False) -> None:
+        if not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", server_id):
+            raise HubError("Invalid server identifier")
+        if action not in ("start", "stop") or not isinstance(allow_players, bool):
+            raise HubError("Unsupported CYD operation")
+        await self.request(f"/api/crafty/servers/{server_id}/{action}", "POST",
+                           data={"allow_players": allow_players})
 
     async def wait_state(self, server_id: str, state: str) -> None:
-        for _ in range(25):
+        for _ in range(18):
             if self.target(await self.servers(), server_id)["state"] == state:
                 return
-            await asyncio.sleep(1)
+            await asyncio.sleep(5)
         raise HubError("Server transition not confirmed yet. Refresh before retrying.")
 
     @staticmethod
@@ -139,11 +136,11 @@ class Hub:
                 for item in running:
                     self.check_players(item, allow_players)
                 for item in running:
-                    await self.write_selected(item["id"], "stop", len(servers))
+                    await self.write_server(item["id"], "stop", allow_players)
                     await self.wait_state(item["id"], "stopped")
             if action == "stop" and target["state"] == "running":
                 self.check_players(target, allow_players)
-                await self.write_selected(server_id, "stop", len(servers))
+                await self.write_server(server_id, "stop", allow_players)
                 await self.wait_state(server_id, "stopped")
             elif action in ("start", "rotate") and target["state"] != "running":
                 # Re-check port occupants after stop confirmations; never start on
@@ -151,7 +148,7 @@ class Hub:
                 fresh = await self.servers()
                 if any(item["id"] != server_id and item["state"] != "stopped" for item in fresh):
                     raise HubError("Shared port is not clear; the selected world was not started.")
-                await self.write_selected(server_id, "start", len(fresh))
+                await self.write_server(server_id, "start")
                 await self.wait_state(server_id, "running")
             result = await self.snapshot()
             result["message"] = "World stopped" if action == "stop" else "Selected world is live"
