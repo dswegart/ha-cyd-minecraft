@@ -7,7 +7,8 @@ credentials, or browser-to-LAN HTTP request is needed.
 
 ## Install
 
-1. Add this repository in HACS as an **Integration**, and download it.
+1. Use a CYD backend supporting guarded server-ID controls and coalesced status
+   reads, then add this repository in HACS as an **Integration**, and download it.
 2. Restart Home Assistant once to discover the integration.
 3. Add **CYD Minecraft** in Devices & Services. Enter your hub's private LAN IPv4
    address and port (default 8098). No token is requested or stored.
@@ -24,17 +25,18 @@ one-tap join mechanism; consoles may require their usual custom-server workaroun
 
 - Both read and control commands require an authenticated HA administrator at
   the backend; hiding a dashboard is not the security check.
-- Only five fixed CYD operations are allowed. Clients cannot submit arbitrary
+- Only two fixed read paths and UUID-scoped start/stop paths are allowed. Clients cannot submit arbitrary
   HTTP paths, hosts, URLs, credentials, or shell commands.
 - The setup accepts only RFC1918 IPv4 literals and disables HTTP redirects.
 - Start refuses shared-port conflicts. Switch stops the previous world, waits
   for a confirmed stopped state, and only then starts the selected world.
 - Stop/switch require confirmation when players might be present. Unknown
   server state fails closed. Writes are not automatically retried.
-- Operations are serialized within this bridge. Legacy CYD uses a global
-  picker; avoid simultaneous physical CYD/Crafty controls while a HA switch is
-  in progress. The bridge checks the selected ID immediately before each write,
-  but the old CYD protocol does not support atomic target-ID commands.
+- Operations are serialized within this bridge, and the CYD backend targets
+  the exact server UUID rather than its physical screen's global picker. The
+  backend rechecks server state, shared-port occupants and players immediately
+  before each action. Status reads share a 15-second non-secret cache; transition
+  confirmation waits up to 90 seconds without automatically retrying a write.
 - Health means the CYD-to-Crafty read path works and reports server state/player
   counts, not a claim that a disconnected physical screen is healthy.
 
